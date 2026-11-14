@@ -171,6 +171,18 @@ declare -a search_strategy=(
     get_master_pod
 )
 
+# Long-running dumps on a hot standby can be cancelled by recovery conflicts
+# (e.g. AccessExclusiveLock replayed from TimescaleDB compression/retention jobs:
+# "canceling statement due to conflict with recovery"). Setting
+# LOGICAL_BACKUP_PREFER_MASTER=true dumps from the master instead, falling back
+# to a replica only if no master pod is found.
+if [[ "${LOGICAL_BACKUP_PREFER_MASTER:-false}" == "true" ]]; then
+    search_strategy=(
+        get_master_pod
+        list_all_replica_pods_any_node
+    )
+fi
+
 function list_all_replica_pods_current_node {
     get_pods "labelSelector=${CLUSTER_NAME_LABEL}%3D${SCOPE},spilo-role%3Dreplica&fieldSelector=spec.nodeName%3D${CURRENT_NODENAME}" | tee | head -n 1
 }
