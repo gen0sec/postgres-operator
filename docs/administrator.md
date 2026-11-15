@@ -285,11 +285,12 @@ will differ and trigger a rolling update of the pods.
 ## Owner References and Finalizers
 
 The Postgres Operator can set [owner references](https://kubernetes.io/docs/concepts/overview/working-with-objects/owners-dependents/) to most of a cluster's child resources to improve
-monitoring with GitOps tools and enable cascading deletes. There are two
+monitoring with GitOps tools and enable cascading deletes. There are three
 exceptions:
 
 * Persistent Volume Claims, because they are handled by the [PV Reclaim Policy]https://kubernetes.io/docs/tasks/administer-cluster/change-pv-reclaim-policy/ of the Stateful Set
 * Cross-namespace secrets, because owner references are not allowed across namespaces by design
+* User-credential secrets when [`enable_secrets_deletion`](reference/operator_parameters.md#enable_secrets_deletion) is `false`, so Kubernetes garbage collection does not cascade-delete them after the Postgresql resource is removed (the `enable_secrets_deletion` flag alone only suppresses the operator's own delete path, not K8s GC)
 
 The operator would clean these resources up with its regular delete loop
 unless they got synced correctly. If for some reason the initial cluster sync
@@ -639,9 +640,11 @@ masters in single-node clusters and/or the last remaining running instance in a 
 cluster.
 
 ## PDB for critical operations
-The `MinAvailable` parameter of this PDB is equal to the `numberOfInstances` set in the
-cluster manifest, while label selector includes `critical-operation=true` condition. This
-allows to protect all pods of a cluster, given they are labeled accordingly.
+The `MaxUnavailable` parameter of this PDB is set to `0`, while label selector includes
+`critical-operation=true` condition. This blocks voluntary disruptions for all pods of a
+cluster that are labeled accordingly, without leaving an unsatisfiable budget behind when
+no pods carry the label (which previously kept monitoring alerts like
+`KubePdbNotEnoughHealthyPods` firing permanently).
 For example, Operator labels all Spilo pods with `critical-operation=true` during the major
 version upgrade run. You may want to protect cluster pods during other critical operations
 by assigning the label to pods yourself or using other means of automation.
@@ -651,7 +654,14 @@ The PDB is only relaxed in two scenarios:
 * If a cluster is scaled down to `0` instances (e.g. for draining nodes)
 * If the PDB is disabled in the configuration (`enable_pod_disruption_budget`)
 
-The PDBs are still in place having `MinAvailable` set to `0`. Disabling PDBs
+The PDBs are still in place but fully relaxed: the primary PDB with `MinAvailable`
+set to `0` and the critical operations PDB with `MaxUnavailable` set to `100%`.
+The two PDBs intentionally use different budget fields matching their purposes:
+the primary PDB guarantees a minimum count of always-present pods
+(`MinAvailable`), while the critical operations PDB freezes disruptions for
+whatever pods currently carry the `critical-operation=true` label - a
+usually-empty set, which `MaxUnavailable: 0` expresses without producing an
+unsatisfiable budget while idle. Disabling PDBs
 helps avoiding blocking Kubernetes upgrades in managed K8s environments at the
 cost of prolonged DB downtime. See PR [#384](https://github.com/zalando/postgres-operator/pull/384)
 for the use case.
@@ -725,9 +735,9 @@ that cannot be overridden to guarantee core functionality. Only variables with
 shipping to be specified differently. There are three ways to specify extra
 environment variables (or override existing ones) for database pods:
 
-* [Via ConfigMap](#via-configmap)
-* [Via Secret](#via-secret)
-* [Via Postgres Cluster Manifest](#via-postgres-cluster-manifest)
+* [Globally via ConfigMap](#via-configmap)
+* [Globally via Secret](#via-secret)
+* [Locally via Postgres Cluster Manifest](#via-postgres-cluster-manifest)
 
 The first two options must be referenced from the operator configuration
 making them global settings for all Postgres cluster the operator watches.
@@ -736,10 +746,10 @@ environment variables. Another case could be to provide custom cloud
 provider or backup settings.
 
 The last options allows for specifying environment variables individual to
-every cluster via the `env` section in the manifest. For example, if you use
-individual backup locations for each of your clusters. Or you want to disable
-WAL archiving for a certain cluster by setting `WAL_S3_BUCKET`, `WAL_GS_BUCKET`
-or `AZURE_STORAGE_ACCOUNT` to an empty string.
+every cluster via the `env` or `envFrom` section in the manifest. For example,
+if you use individual backup locations for each of your clusters. Or you want
+to disable WAL archiving for a certain cluster by setting `WAL_S3_BUCKET`,
+`WAL_GS_BUCKET` or `AZURE_STORAGE_ACCOUNT` to an empty string.
 
 The operator will give precedence to environment variables in the following
 order (e.g. a variable defined in 4. overrides a variable with the same name
@@ -752,6 +762,9 @@ in 5.):
 5. Pod environment secret via operator config
 6. Pod environment config map via operator config
 7. WAL and logical backup settings from operator config
+
+The `envFrom` section is treated separately and allows for a very flexible
+local configuration referencing a ConfigMap or a Secret.
 
 ### Via ConfigMap
 
@@ -928,6 +941,41 @@ For the `external-dns.alpha.kubernetes.io/hostname` annotation the `-pooler`
 suffix will be appended to the cluster name used in the template which is
 defined in `master|replica_dns_name_format`.
 
+## Node Ports
+
+Alternatively to Load Balancers Node Ports can be used. Kubernetes services with type
+`NodePort` redirect traffic from a specified port on your kubernetes nodes to your service.
+To expose your services to an external network with NodePorts you can set `enableMasterNodePort` and/or `enableReplicaNodePort` to `true`
+in your cluster manifest. In the case any of these variables are omitted from the manifest, the operator configuration settings `enable_master_node_port` and `enable_replica_node_port` apply.
+Note that the operator settings affect all Postgresql services running in all namespaces watched
+by the operator.
+
+**Enabling a NodePort configuration will override the corresponding LoadBalancer configuration.**
+
+There are multiple options to specify service annotations that will be merged
+with each other and override in the following order (where latter take
+precedence):
+
+1. Globally configured `custom_service_annotations`
+2. `serviceAnnotations` specified in the cluster manifest
+3. `masterServiceAnnotations` and `replicaServiceAnnotations` specified in the cluster manifest
+
+Load-Balancer specific annotations are not applied.
+
+Node port services can also be configured for the [connection pooler](user.md#connection-pooler) pods
+with the manifest flags `enableMasterPoolerNodePort` and/or `enableReplicaPoolerNodePort` or in the operator configuration with `enable_master_pooler_node_port`
+and/or `enable_replica_pooler_node_port`.
+
+To configure which ports Kubernetes should use for your NodePort service you can configure ports in your cluster manifest
+for each type:
+
+- masterNodePort
+- masterPoolerNodePort
+- replicaNodePort
+- replicaPoolerNodePort
+
+When not defined or set to 0 kubernetes will choose a port for you from [your kubernetes cluster's configured range](https://kubernetes.io/docs/concepts/services-networking/service/#type-nodeport).
+
 ## Running periodic 'autorepair' scans of K8s objects
 
 The Postgres Operator periodically scans all K8s objects belonging to each
@@ -1059,6 +1107,32 @@ configuration:
     wal_s3_bucket: your-backup-path
 ```
 
+Alternatively, if your cluster uses EKS with OIDC, you can use
+[IRSA](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html)
+(IAM Roles for Service Accounts) instead of kube2iam. Set `irsa_role_arn` to
+the full ARN of the IAM role:
+
+**OperatorConfiguration**
+
+```yaml
+apiVersion: "acid.zalan.do/v1"
+kind: OperatorConfiguration
+metadata:
+  name: postgresql-operator-configuration
+configuration:
+  aws_or_gcp:
+    aws_region: eu-central-1
+    irsa_role_arn: arn:aws:iam::123456789012:role/postgres-pod-role
+    wal_s3_bucket: your-backup-path
+```
+
+When `irsa_role_arn` is set the operator annotates the pod service account with
+`eks.amazonaws.com/role-arn` on every reconcile. The EKS OIDC webhook then
+injects an AWS web identity token into each pod, which takes precedence over
+the EC2 metadata credentials used by kube2iam. Both `kube_iam_role` and
+`irsa_role_arn` can coexist during a migration — existing pods retain the
+kube2iam annotation until they are rotated, at which point only IRSA is used.
+
 The referenced IAM role should contain the following privileges to make sure
 Postgres can send compressed WAL files to the given S3 bucket:
 
@@ -1169,6 +1243,7 @@ aws_or_gcp:
   # additional_secret_mount_path: ""
   # aws_region: eu-central-1
   # kube_iam_role: ""
+  # irsa_role_arn: ""
   # log_s3_bucket: ""
   # wal_s3_bucket: ""
   wal_gs_bucket: "postgres-backups-bucket-28302F2"  # name of bucket on where to save the WAL-E logs
@@ -1218,6 +1293,7 @@ aws_or_gcp:
   additional_secret_mount_path: "/var/secrets/google"  # or where ever you want to mount the file
   # aws_region: eu-central-1
   # kube_iam_role: ""
+  # irsa_role_arn: ""
   # log_s3_bucket: ""
   # wal_s3_bucket: ""
   wal_gs_bucket: "postgres-backups-bucket-28302F2"  # name of bucket on where to save the WAL-E logs
@@ -1502,7 +1578,7 @@ make docker
 
 # build in image in minikube docker env
 eval $(minikube docker-env)
-docker build -t ghcr.io/zalando/postgres-operator-ui:v1.15.1 .
+docker buildx build --load -t ghcr.io/zalando/postgres-operator-ui:v2.0.3 .
 
 # apply UI manifests next to a running Postgres Operator
 kubectl apply -f manifests/

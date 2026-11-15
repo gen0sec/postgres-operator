@@ -85,6 +85,10 @@ These parameters are grouped directly under  the `spec` key in the manifest.
   requires a custom Spilo image. Note the FSGroup of a Pod cannot be changed
   without recreating a new Pod. Optional.
 
+* **livenessProbe**
+  Allows for adding a liveness probe to the Spilo container to detect if it's
+  running properly.
+
 * **enableMasterLoadBalancer**
   boolean flag to override the operator defaults (set by the
   `enable_master_load_balancer` parameter) to define whether to enable the load
@@ -109,10 +113,53 @@ These parameters are grouped directly under  the `spec` key in the manifest.
 
 * **allowedSourceRanges**
   when one or more load balancers are enabled for the cluster, this parameter
-  defines the comma-separated range of IP networks (in CIDR-notation). The
-  corresponding load balancer is accessible only to the networks defined by
-  this parameter. Optional, when empty the load balancer service becomes
-  inaccessible from outside of the Kubernetes cluster.
+  defines the comma-separated range of IP networks (in CIDR-notation). Both
+  IPv4 (e.g. `192.168.1.0/24`) and IPv6 (e.g. `fd01::/48`) CIDR ranges are
+  supported. The corresponding load balancer is accessible only to the networks
+  defined by this parameter. Optional, when empty the load balancer service
+  becomes inaccessible from outside of the Kubernetes cluster.
+
+* **enableMasterNodePort**
+  boolean flag to override the operator defaults (set by the
+  `enable_master_node_port` parameter) to define whether to enable the node
+  port pointing to the Postgres primary. Optional. Overrides `enableMasterLoadBalancer`.
+
+* **enableMasterPoolerNodePort**
+  boolean flag to override the operator defaults (set by the
+  `enable_master_pooler_node_port` parameter) to define whether to enable
+  the node port for master pooler pods pointing to the Postgres primary.
+  Optional. Overrides `enableMasterPoolerLoadBalancer`.
+
+* **enableReplicaNodePort**
+  boolean flag to override the operator defaults (set by the
+  `enable_replica_node_port` parameter) to define whether to enable the node
+  port pointing to the Postgres standby instances. Optional. Overrides `enableReplicaLoadBalancer`.
+
+* **enableReplicaPoolerNodePort**
+  boolean flag to override the operator defaults (set by the
+  `enable_replica_pooler_node_port` parameter) to define whether to enable
+  the node port for replica pooler pods pointing to the Postgres standby
+  instances. Optional. Overrides `enableReplicaPoolerLoadBalancer`.
+
+* **masterNodePort**
+  integer flag to specify a port number for the node port to the Postgres primary.
+  Only used when `enableMasterNodePort` or `enable_master_node_port` are enabled.
+  Optional. Kubernetes will provide a port number for you if not specified.
+
+* **masterPoolerNodePort**
+  integer flag to specify a port number for the node port for the master pooler pods pointing to the Postgres primary.
+  Only used when `enableMasterPoolerNodePort` or `enable_master_pooler_node_port` are enabled.
+  Optional. Kubernetes will provide a port number for you if not specified.
+
+* **replicaNodePort**
+  integer flag to specify a port number for the node port pointing to the Postgres standby instances.
+  Only used when `enableReplicaNodePort` or `enable_replica_node_port` are enabled.
+  Optional. Kubernetes will provide a port number for you if not specified.
+
+* **replicaPoolerNodePort**
+  integer flag to specify a port number for the node port for the replica pooler pods pointing to the Postgres standby instances
+  Only used when `enableReplicaPoolerNodePort` or `enable_replica_pooler_node_port` are enabled.
+  Optional. Kubernetes will provide a port number for you if not specified.
 
 * **maintenanceWindows**
   a list which defines specific time frames when certain maintenance operations
@@ -364,7 +411,22 @@ explanation of `ttl` and `loop_wait` parameters.
   This feature is included since Patroni 3.0.0. Hence, check the container
   image in use if this feature is included in the used Patroni version. The
   default is set to `false`. Optional. 
-  
+
+* **remove_data_directory_on_rewind_failure**
+  Patroni `postgresql.remove_data_directory_on_rewind_failure` parameter value.
+  If enabled, Patroni removes the data directory of a replica when `pg_rewind`
+  fails and re-initializes it from the primary, instead of starting Postgres
+  on a partially rewound data directory. This is a local Patroni setting, so it
+  is written to `SPILO_CONFIGURATION` and changing it rolls the pods. Not set by
+  default (Patroni default `false`). Optional.
+
+* **remove_data_directory_on_diverged_timelines**
+  Patroni `postgresql.remove_data_directory_on_diverged_timelines` parameter
+  value. If enabled, Patroni removes the data directory and re-initializes the
+  replica when its timeline diverged from the primary and `pg_rewind` cannot be
+  used. Same mechanics as above. Not set by default (Patroni default `false`).
+  Optional.
+
 ## Postgres container resources
 
 Those parameters define [CPU and memory requests and limits](https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/)
@@ -507,11 +569,11 @@ properties of the persistent storage that stores Postgres data.
 
 * **iops**
   When running the operator on AWS the latest generation of EBS volumes (`gp3`)
-  allows for configuring the number of IOPS. Maximum is 16000. Optional.
+  allows for configuring the number of IOPS. Maximum is 80000. Optional.
 
 * **throughput**
   When running the operator on AWS the latest generation of EBS volumes (`gp3`)
-  allows for configuring the throughput in MB/s. Maximum is 1000. Optional.
+  allows for configuring the throughput in MB/s. Maximum is 2000. Optional.
 
 * **selector**
   A label query over PVs to consider for binding. See the [Kubernetes 

@@ -10,8 +10,8 @@ import (
 
 	"github.com/r3labs/diff"
 	"github.com/sirupsen/logrus"
-	acidzalando "github.com/zalando/postgres-operator/pkg/apis/acid.zalan.do"
-	acidv1 "github.com/zalando/postgres-operator/pkg/apis/acid.zalan.do/v1"
+	acidzalando "github.com/zalando/postgres-operator/v2/pkg/apis/acid.zalan.do"
+	acidv1 "github.com/zalando/postgres-operator/v2/pkg/apis/acid.zalan.do/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,11 +19,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	"github.com/zalando/postgres-operator/pkg/util"
-	"github.com/zalando/postgres-operator/pkg/util/config"
-	"github.com/zalando/postgres-operator/pkg/util/constants"
-	"github.com/zalando/postgres-operator/pkg/util/k8sutil"
-	"github.com/zalando/postgres-operator/pkg/util/retryutil"
+	"github.com/zalando/postgres-operator/v2/pkg/util"
+	"github.com/zalando/postgres-operator/v2/pkg/util/config"
+	"github.com/zalando/postgres-operator/v2/pkg/util/constants"
+	"github.com/zalando/postgres-operator/v2/pkg/util/k8sutil"
+	"github.com/zalando/postgres-operator/v2/pkg/util/retryutil"
 )
 
 var poolerRunAsUser = int64(100)
@@ -253,6 +253,8 @@ func (c *Cluster) getConnectionPoolerEnvVars() []v1.EnvVar {
 	minSize := defaultSize / 2
 	reserveSize := minSize
 
+	passwordEncryption := passwordEncryptionFromSpec(spec)
+
 	return []v1.EnvVar{
 		{
 			Name:  "CONNECTION_POOLER_PORT",
@@ -261,6 +263,10 @@ func (c *Cluster) getConnectionPoolerEnvVars() []v1.EnvVar {
 		{
 			Name:  "CONNECTION_POOLER_MODE",
 			Value: effectiveMode,
+		},
+		{
+			Name:  "CONNECTION_POOLER_AUTH_TYPE",
+			Value: string(passwordEncryption),
 		},
 		{
 			Name:  "CONNECTION_POOLER_DEFAULT_SIZE",
@@ -292,7 +298,7 @@ func (c *Cluster) generateConnectionPoolerPodTemplate(role PostgresRole) (
 	if connectionPoolerSpec == nil {
 		connectionPoolerSpec = &acidv1.ConnectionPooler{}
 	}
-	gracePeriod := int64(c.OpConfig.PodTerminateGracePeriod.Seconds())
+	gracePeriod := int64(util.CoalesceDuration(c.OpConfig.PodTerminateGracePeriod, "5m").Seconds())
 	resources, err := c.generateResourceRequirements(
 		connectionPoolerSpec.Resources,
 		makeDefaultConnectionPoolerResources(&c.OpConfig),
@@ -566,7 +572,9 @@ func (c *Cluster) generateConnectionPoolerService(connectionPooler *ConnectionPo
 		},
 	}
 
-	if c.shouldCreateLoadBalancerForPoolerService(poolerRole, spec) {
+	if ok, port := c.shouldCreateNodePortForPoolerService(poolerRole, spec); ok {
+		c.configureNodePortService(&serviceSpec, port)
+	} else if c.shouldCreateLoadBalancerForPoolerService(poolerRole, spec) {
 		c.configureLoadBalanceService(&serviceSpec, spec.AllowedSourceRanges)
 	}
 
@@ -594,7 +602,9 @@ func (c *Cluster) generatePoolerServiceAnnotations(role PostgresRole, spec *acid
 	var dnsString string
 	annotations := c.getCustomServiceAnnotations(role, spec)
 
-	if c.shouldCreateLoadBalancerForPoolerService(role, spec) {
+	nodePort, _ := c.shouldCreateNodePortForPoolerService(role, spec)
+
+	if !nodePort && c.shouldCreateLoadBalancerForPoolerService(role, spec) {
 		// -repl suffix will be added by replicaDNSName
 		clusterNameWithPoolerSuffix := c.connectionPoolerName(Master)
 		if role == Master {
@@ -630,6 +640,37 @@ func (c *Cluster) shouldCreateLoadBalancerForPoolerService(role PostgresRole, sp
 		}
 		return c.OpConfig.EnableMasterPoolerLoadBalancer
 
+	default:
+		panic(fmt.Sprintf("Unknown role %v", role))
+	}
+}
+
+func (c *Cluster) shouldCreateNodePortForPoolerService(role PostgresRole, spec *acidv1.PostgresSpec) (bool, int32) {
+	switch role {
+	case Replica:
+		// if the value is explicitly set in a Postgresql manifest, follow this setting
+		if spec.EnableReplicaPoolerNodePort != nil {
+			port := int32(0)
+			if spec.ReplicaPoolerNodePort != nil {
+				port = *spec.ReplicaPoolerNodePort
+			}
+
+			return *spec.EnableReplicaPoolerNodePort, port
+		}
+
+		// otherwise, follow the operator configuration
+		return c.OpConfig.EnableReplicaPoolerNodePort, 0
+	case Master:
+		if spec.EnableMasterPoolerNodePort != nil {
+			port := int32(0)
+			if spec.MasterPoolerNodePort != nil {
+				port = *spec.MasterPoolerNodePort
+			}
+
+			return *spec.EnableMasterPoolerNodePort, port
+		}
+
+		return c.OpConfig.EnableMasterPoolerNodePort, 0
 	default:
 		panic(fmt.Sprintf("Unknown role %v", role))
 	}
@@ -877,6 +918,8 @@ func (c *Cluster) needSyncConnectionPoolerDefaults(Config *Config, spec *acidv1.
 		return false, reasons
 	}
 
+	authTypeFound := false
+	passwordEncryption := passwordEncryptionFromSpec(&c.Spec)
 	for _, env := range poolerContainer.Env {
 		if spec.User == "" && env.Name == "PGUSER" {
 			ref := env.ValueFrom.SecretKeyRef.LocalObjectReference
@@ -900,6 +943,22 @@ func (c *Cluster) needSyncConnectionPoolerDefaults(Config *Config, spec *acidv1.
 				env.Value, config.Schema)
 			reasons = append(reasons, msg)
 		}
+
+		if env.Name == "CONNECTION_POOLER_AUTH_TYPE" {
+			authTypeFound = true
+			if string(passwordEncryption) != env.Value {
+				sync = true
+				msg := fmt.Sprintf("pooler auth type is different (having %s, required %s)",
+					env.Value, passwordEncryption)
+				reasons = append(reasons, msg)
+			}
+		}
+	}
+
+	// env var is missing on deployments created before it was introduced
+	if !authTypeFound {
+		sync = true
+		reasons = append(reasons, "pooler auth type env variable is missing")
 	}
 
 	return sync, reasons

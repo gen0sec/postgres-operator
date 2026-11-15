@@ -20,14 +20,14 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/sirupsen/logrus"
-	acidzalando "github.com/zalando/postgres-operator/pkg/apis/acid.zalan.do"
-	acidv1 "github.com/zalando/postgres-operator/pkg/apis/acid.zalan.do/v1"
-	"github.com/zalando/postgres-operator/pkg/spec"
-	"github.com/zalando/postgres-operator/pkg/util"
-	"github.com/zalando/postgres-operator/pkg/util/constants"
-	"github.com/zalando/postgres-operator/pkg/util/k8sutil"
-	"github.com/zalando/postgres-operator/pkg/util/nicediff"
-	"github.com/zalando/postgres-operator/pkg/util/retryutil"
+	acidzalando "github.com/zalando/postgres-operator/v2/pkg/apis/acid.zalan.do"
+	acidv1 "github.com/zalando/postgres-operator/v2/pkg/apis/acid.zalan.do/v1"
+	"github.com/zalando/postgres-operator/v2/pkg/spec"
+	"github.com/zalando/postgres-operator/v2/pkg/util"
+	"github.com/zalando/postgres-operator/v2/pkg/util/constants"
+	"github.com/zalando/postgres-operator/v2/pkg/util/k8sutil"
+	"github.com/zalando/postgres-operator/v2/pkg/util/nicediff"
+	"github.com/zalando/postgres-operator/v2/pkg/util/retryutil"
 )
 
 // OAuthTokenGetter provides the method for fetching OAuth tokens
@@ -162,6 +162,14 @@ func specPatch(spec interface{}) ([]byte, error) {
 func metaAnnotationsPatch(annotations map[string]string) ([]byte, error) {
 	var meta metav1.ObjectMeta
 	meta.Annotations = annotations
+	return json.Marshal(struct {
+		ObjMeta interface{} `json:"metadata"`
+	}{&meta})
+}
+
+func metaLabelsPatch(labels map[string]string) ([]byte, error) {
+	var meta metav1.ObjectMeta
+	meta.Labels = labels
 	return json.Marshal(struct {
 		ObjMeta interface{} `json:"metadata"`
 	}{&meta})
@@ -334,7 +342,7 @@ func (c *Cluster) annotationsSet(annotations map[string]string) map[string]strin
 }
 
 func (c *Cluster) waitForPodLabel(podEvents chan PodEvent, stopCh chan struct{}, role *PostgresRole) (*v1.Pod, error) {
-	timeout := time.After(c.OpConfig.PodLabelWaitTimeout)
+	timeout := time.After(c.OpConfig.PodLabelWaitTimeout.Duration)
 	for {
 		select {
 		case podEvent := <-podEvents:
@@ -356,7 +364,7 @@ func (c *Cluster) waitForPodLabel(podEvents chan PodEvent, stopCh chan struct{},
 }
 
 func (c *Cluster) waitForPodDeletion(podEvents chan PodEvent) error {
-	timeout := time.After(c.OpConfig.PodDeletionWaitTimeout)
+	timeout := time.After(c.OpConfig.PodDeletionWaitTimeout.Duration)
 	for {
 		select {
 		case podEvent := <-podEvents:
@@ -370,7 +378,7 @@ func (c *Cluster) waitForPodDeletion(podEvents chan PodEvent) error {
 }
 
 func (c *Cluster) waitStatefulsetReady() error {
-	return retryutil.Retry(c.OpConfig.ResourceCheckInterval, c.OpConfig.ResourceCheckTimeout,
+	return retryutil.Retry(c.OpConfig.ResourceCheckInterval.Duration, c.OpConfig.ResourceCheckTimeout.Duration,
 		func() (bool, error) {
 			listOptions := metav1.ListOptions{
 				LabelSelector: c.labelsSet(false).String(),
@@ -420,7 +428,7 @@ func (c *Cluster) _waitPodLabelsReady(anyReplica bool) error {
 		c.logger.Debug("Waiting for any replica pod to become ready")
 	}
 
-	err := retryutil.Retry(c.OpConfig.ResourceCheckInterval, c.OpConfig.ResourceCheckTimeout,
+	err := retryutil.Retry(c.OpConfig.ResourceCheckInterval.Duration, c.OpConfig.ResourceCheckTimeout.Duration,
 		func() (bool, error) {
 			masterCount := 0
 			if !anyReplica {
@@ -619,9 +627,12 @@ func (c *Cluster) patroniKubernetesUseConfigMaps() bool {
 	if !c.patroniUsesKubernetes() {
 		return false
 	}
+	if c.OpConfig.KubernetesUseConfigMaps == nil {
+		return true
+	}
 
 	// otherwise, follow the operator configuration
-	return c.OpConfig.KubernetesUseConfigMaps
+	return *c.OpConfig.KubernetesUseConfigMaps
 }
 
 // Earlier arguments take priority
