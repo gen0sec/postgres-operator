@@ -7,11 +7,11 @@ import (
 	b64 "encoding/base64"
 	"encoding/json"
 
-	apiacidv1 "github.com/zalando/postgres-operator/pkg/apis/acid.zalan.do/v1"
-	zalandoclient "github.com/zalando/postgres-operator/pkg/generated/clientset/versioned"
-	acidv1 "github.com/zalando/postgres-operator/pkg/generated/clientset/versioned/typed/acid.zalan.do/v1"
-	zalandov1 "github.com/zalando/postgres-operator/pkg/generated/clientset/versioned/typed/zalando.org/v1"
-	"github.com/zalando/postgres-operator/pkg/spec"
+	apiacidv1 "github.com/zalando/postgres-operator/v2/pkg/apis/acid.zalan.do/v1"
+	zalandoclient "github.com/zalando/postgres-operator/v2/pkg/generated/clientset/versioned"
+	acidv1 "github.com/zalando/postgres-operator/v2/pkg/generated/clientset/versioned/typed/acid.zalan.do/v1"
+	zalandov1 "github.com/zalando/postgres-operator/v2/pkg/generated/clientset/versioned/typed/zalando.org/v1"
+	"github.com/zalando/postgres-operator/v2/pkg/spec"
 	apiappsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -67,6 +67,7 @@ type KubernetesClient struct {
 	zalandov1.FabricEventStreamsGetter
 
 	RESTClient         rest.Interface
+	Clientset          *kubernetes.Clientset
 	AcidV1ClientSet    *zalandoclient.Clientset
 	Zalandov1ClientSet *zalandoclient.Clientset
 }
@@ -148,6 +149,7 @@ func NewFromConfig(cfg *rest.Config) (KubernetesClient, error) {
 		return kubeClient, fmt.Errorf("could not get clientset: %v", err)
 	}
 
+	kubeClient.Clientset = client
 	kubeClient.PodsGetter = client.CoreV1()
 	kubeClient.ServicesGetter = client.CoreV1()
 	kubeClient.EndpointsGetter = client.CoreV1()

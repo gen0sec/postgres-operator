@@ -11,15 +11,15 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
-	acidv1 "github.com/zalando/postgres-operator/pkg/apis/acid.zalan.do/v1"
-	fakeacidv1 "github.com/zalando/postgres-operator/pkg/generated/clientset/versioned/fake"
-	"github.com/zalando/postgres-operator/pkg/spec"
-	"github.com/zalando/postgres-operator/pkg/util"
-	"github.com/zalando/postgres-operator/pkg/util/config"
-	"github.com/zalando/postgres-operator/pkg/util/constants"
-	"github.com/zalando/postgres-operator/pkg/util/k8sutil"
-	"github.com/zalando/postgres-operator/pkg/util/patroni"
-	"github.com/zalando/postgres-operator/pkg/util/teams"
+	acidv1 "github.com/zalando/postgres-operator/v2/pkg/apis/acid.zalan.do/v1"
+	fakeacidv1 "github.com/zalando/postgres-operator/v2/pkg/generated/clientset/versioned/fake"
+	"github.com/zalando/postgres-operator/v2/pkg/spec"
+	"github.com/zalando/postgres-operator/v2/pkg/util"
+	"github.com/zalando/postgres-operator/v2/pkg/util/config"
+	"github.com/zalando/postgres-operator/v2/pkg/util/constants"
+	"github.com/zalando/postgres-operator/v2/pkg/util/k8sutil"
+	"github.com/zalando/postgres-operator/v2/pkg/util/patroni"
+	"github.com/zalando/postgres-operator/v2/pkg/util/teams"
 	batchv1 "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -33,8 +33,8 @@ const (
 	replicationUserName = "standby"
 	poolerUserName      = "pooler"
 	adminUserName       = "admin"
-	exampleSpiloConfig  = `{"postgresql":{"bin_dir":"/usr/lib/postgresql/12/bin","parameters":{"autovacuum_analyze_scale_factor":"0.1"},"pg_hba":["hostssl all all 0.0.0.0/0 md5","host all all 0.0.0.0/0 md5"]},"bootstrap":{"initdb":[{"auth-host":"md5"},{"auth-local":"trust"},"data-checksums",{"encoding":"UTF8"},{"locale":"en_US.UTF-8"}],"dcs":{"ttl":30,"loop_wait":10,"retry_timeout":10,"maximum_lag_on_failover":33554432,"postgresql":{"parameters":{"max_connections":"100","max_locks_per_transaction":"64","max_worker_processes":"4"}}}}}`
-	spiloConfigDiff     = `{"postgresql":{"bin_dir":"/usr/lib/postgresql/12/bin","parameters":{"autovacuum_analyze_scale_factor":"0.1"},"pg_hba":["hostssl all all 0.0.0.0/0 md5","host all all 0.0.0.0/0 md5"]},"bootstrap":{"initdb":[{"auth-host":"md5"},{"auth-local":"trust"},"data-checksums",{"encoding":"UTF8"},{"locale":"en_US.UTF-8"}],"dcs":{"loop_wait":10,"retry_timeout":10,"maximum_lag_on_failover":33554432,"postgresql":{"parameters":{"max_locks_per_transaction":"64","max_worker_processes":"4"}}}}}`
+	exampleSpiloConfig  = `{"postgresql":{"bin_dir":"/usr/lib/postgresql/12/bin","parameters":{"autovacuum_analyze_scale_factor":"0.1"},"pg_hba":["hostssl all all 0.0.0.0/0 scram-sha-256","host all all 0.0.0.0/0 scram-sha-256"]},"bootstrap":{"initdb":[{"auth-host":"scram-sha-256"},{"auth-local":"trust"},"data-checksums",{"encoding":"UTF8"},{"locale":"en_US.UTF-8"}],"dcs":{"ttl":30,"loop_wait":10,"retry_timeout":10,"maximum_lag_on_failover":33554432,"postgresql":{"parameters":{"max_connections":"100","max_locks_per_transaction":"64","max_worker_processes":"4"}}}}}`
+	spiloConfigDiff     = `{"postgresql":{"bin_dir":"/usr/lib/postgresql/12/bin","parameters":{"autovacuum_analyze_scale_factor":"0.1"},"pg_hba":["hostssl all all 0.0.0.0/0 scram-sha-256","host all all 0.0.0.0/0 scram-sha-256"]},"bootstrap":{"initdb":[{"auth-host":"scram-sha-256"},{"auth-local":"trust"},"data-checksums",{"encoding":"UTF8"},{"locale":"en_US.UTF-8"}],"dcs":{"loop_wait":10,"retry_timeout":10,"maximum_lag_on_failover":33554432,"postgresql":{"parameters":{"max_locks_per_transaction":"64","max_worker_processes":"4"}}}}}`
 )
 
 var logger = logrus.New().WithField("test", "cluster")
@@ -95,6 +95,7 @@ func TestCreate(t *testing.T) {
 
 	client := k8sutil.KubernetesClient{
 		DeploymentsGetter:            clientSet.AppsV1(),
+		ConfigMapsGetter:             clientSet.CoreV1(),
 		CronJobsGetter:               clientSet.BatchV1(),
 		EndpointsGetter:              clientSet.CoreV1(),
 		PersistentVolumeClaimsGetter: clientSet.CoreV1(),
@@ -138,7 +139,8 @@ func TestCreate(t *testing.T) {
 	var cluster = New(
 		Config{
 			OpConfig: config.Config{
-				PodManagementPolicy: "ordered_ready",
+				PodManagementPolicy:     "ordered_ready",
+				PodTerminateGracePeriod: &metav1.Duration{Duration: 600 * time.Second},
 				Resources: config.Resources{
 					ClusterLabels:         map[string]string{"application": "spilo"},
 					ClusterNameLabel:      "cluster-name",
@@ -147,8 +149,8 @@ func TestCreate(t *testing.T) {
 					DefaultMemoryRequest:  "300Mi",
 					DefaultMemoryLimit:    "300Mi",
 					PodRoleLabel:          "spilo-role",
-					ResourceCheckInterval: time.Duration(3),
-					ResourceCheckTimeout:  time.Duration(10),
+					ResourceCheckInterval: &metav1.Duration{Duration: 3 * time.Second},
+					ResourceCheckTimeout:  &metav1.Duration{Duration: 10 * time.Minute},
 				},
 				EnableFinalizers: util.True(),
 			},
@@ -224,6 +226,63 @@ func TestStatefulSetUpdateWithEnv(t *testing.T) {
 
 	if reflect.DeepEqual(oldSS, newSS) {
 		t.Errorf("in %s StatefulSet's must be not equal", t.Name())
+	}
+}
+
+func TestStatefulSetUpdateWithEnvFrom(t *testing.T) {
+	oldSpec := &acidv1.PostgresSpec{
+		TeamID: "myapp", NumberOfInstances: 1,
+		Resources: &acidv1.Resources{
+			ResourceRequests: acidv1.ResourceDescription{CPU: k8sutil.StringToPointer("1"), Memory: k8sutil.StringToPointer("10")},
+			ResourceLimits:   acidv1.ResourceDescription{CPU: k8sutil.StringToPointer("1"), Memory: k8sutil.StringToPointer("10")},
+		},
+		Volume: acidv1.Volume{
+			Size: "1G",
+		},
+	}
+	oldSS, err := cl.generateStatefulSet(oldSpec)
+	if err != nil {
+		t.Errorf("in %s no StatefulSet created %v", t.Name(), err)
+	}
+
+	newSpec := oldSpec.DeepCopy()
+	newSS, err := cl.generateStatefulSet(newSpec)
+	if err != nil {
+		t.Errorf("in %s no StatefulSet created %v", t.Name(), err)
+	}
+
+	if !reflect.DeepEqual(oldSS, newSS) {
+		t.Errorf("in %s StatefulSet's must be equal", t.Name())
+	}
+
+	newSpec.EnvFrom = []v1.EnvFromSource{
+		{
+			ConfigMapRef: &v1.ConfigMapEnvSource{
+				LocalObjectReference: v1.LocalObjectReference{
+					Name: "test-configmap",
+				},
+			},
+		},
+		{
+			SecretRef: &v1.SecretEnvSource{
+				LocalObjectReference: v1.LocalObjectReference{
+					Name: "test-secret",
+				},
+			},
+		},
+	}
+	newSS, err = cl.generateStatefulSet(newSpec)
+	if err != nil {
+		t.Errorf("in %s no StatefulSet created %v", t.Name(), err)
+	}
+
+	if reflect.DeepEqual(oldSS, newSS) {
+		t.Errorf("in %s StatefulSet's must be not equal", t.Name())
+	}
+
+	postgresContainer := newSS.Spec.Template.Spec.Containers[0]
+	if !reflect.DeepEqual(postgresContainer.EnvFrom, newSpec.EnvFrom) {
+		t.Errorf("expected envFrom %v, got %v", newSpec.EnvFrom, postgresContainer.EnvFrom)
 	}
 }
 
@@ -1186,11 +1245,11 @@ func TestCompareSpiloConfiguration(t *testing.T) {
 		ExpectedResult bool
 	}{
 		{
-			`{"postgresql":{"bin_dir":"/usr/lib/postgresql/12/bin","parameters":{"autovacuum_analyze_scale_factor":"0.1"},"pg_hba":["hostssl all all 0.0.0.0/0 md5","host all all 0.0.0.0/0 md5"]},"bootstrap":{"initdb":[{"auth-host":"md5"},{"auth-local":"trust"},"data-checksums",{"encoding":"UTF8"},{"locale":"en_US.UTF-8"}],"dcs":{"ttl":30,"loop_wait":10,"retry_timeout":10,"maximum_lag_on_failover":33554432,"postgresql":{"parameters":{"max_connections":"100","max_locks_per_transaction":"64","max_worker_processes":"4"}}}}}`,
+			`{"postgresql":{"bin_dir":"/usr/lib/postgresql/12/bin","parameters":{"autovacuum_analyze_scale_factor":"0.1"},"pg_hba":["hostssl all all 0.0.0.0/0 scram-sha-256","host all all 0.0.0.0/0 scram-sha-256"]},"bootstrap":{"initdb":[{"auth-host":"scram-sha-256"},{"auth-local":"trust"},"data-checksums",{"encoding":"UTF8"},{"locale":"en_US.UTF-8"}],"dcs":{"ttl":30,"loop_wait":10,"retry_timeout":10,"maximum_lag_on_failover":33554432,"postgresql":{"parameters":{"max_connections":"100","max_locks_per_transaction":"64","max_worker_processes":"4"}}}}}`,
 			true,
 		},
 		{
-			`{"postgresql":{"bin_dir":"/usr/lib/postgresql/12/bin","parameters":{"autovacuum_analyze_scale_factor":"0.1"},"pg_hba":["hostssl all all 0.0.0.0/0 md5","host all all 0.0.0.0/0 md5"]},"bootstrap":{"initdb":[{"auth-host":"md5"},{"auth-local":"trust"},"data-checksums",{"encoding":"UTF8"},{"locale":"en_US.UTF-8"}],"dcs":{"ttl":30,"loop_wait":10,"retry_timeout":10,"maximum_lag_on_failover":33554432,"postgresql":{"parameters":{"max_connections":"200","max_locks_per_transaction":"64","max_worker_processes":"4"}}}}}`,
+			`{"postgresql":{"bin_dir":"/usr/lib/postgresql/12/bin","parameters":{"autovacuum_analyze_scale_factor":"0.1"},"pg_hba":["hostssl all all 0.0.0.0/0 scram-sha-256","host all all 0.0.0.0/0 scram-sha-256"]},"bootstrap":{"initdb":[{"auth-host":"scram-sha-256"},{"auth-local":"trust"},"data-checksums",{"encoding":"UTF8"},{"locale":"en_US.UTF-8"}],"dcs":{"ttl":30,"loop_wait":10,"retry_timeout":10,"maximum_lag_on_failover":33554432,"postgresql":{"parameters":{"max_connections":"200","max_locks_per_transaction":"64","max_worker_processes":"4"}}}}}`,
 			true,
 		},
 		{
@@ -1334,7 +1393,8 @@ func newService(
 	svcType v1.ServiceType,
 	sourceRanges []string,
 	selector map[string]string,
-	policy v1.ServiceExternalTrafficPolicyType) *v1.Service {
+	policy v1.ServiceExternalTrafficPolicyType,
+	nodePort *int32) *v1.Service {
 	svc := &v1.Service{
 		Spec: v1.ServiceSpec{
 			Selector:                 selector,
@@ -1344,6 +1404,16 @@ func newService(
 		},
 	}
 	svc.Annotations = annotations
+
+	if nodePort != nil {
+		svc.Spec.Ports = []v1.ServicePort{
+			{
+				Name:     "port",
+				NodePort: *nodePort,
+			},
+		}
+	}
+
 	return svc
 }
 
@@ -1370,6 +1440,7 @@ func TestCompareServices(t *testing.T) {
 		[]string{"128.141.0.0/16", "137.138.0.0/16"},
 		nil,
 		defaultPolicy,
+		nil,
 	)
 
 	ownerRef := metav1.OwnerReference{
@@ -1380,6 +1451,9 @@ func TestCompareServices(t *testing.T) {
 	}
 
 	serviceWithOwnerReference.ObjectMeta.OwnerReferences = append(serviceWithOwnerReference.ObjectMeta.OwnerReferences, ownerRef)
+
+	portZero := int32(0)
+	portNotZero := int32(1337)
 
 	tests := []struct {
 		about   string
@@ -1396,14 +1470,14 @@ func TestCompareServices(t *testing.T) {
 				},
 				v1.ServiceTypeClusterIP,
 				[]string{"128.141.0.0/16", "137.138.0.0/16"},
-				nil, defaultPolicy),
+				nil, defaultPolicy, nil),
 			new: newService(
 				map[string]string{
 					constants.ZalandoDNSNameAnnotation: "clstr.acid.zalan.do",
 				},
 				v1.ServiceTypeClusterIP,
 				[]string{"128.141.0.0/16", "137.138.0.0/16"},
-				nil, defaultPolicy),
+				nil, defaultPolicy, nil),
 			match: true,
 		},
 		{
@@ -1414,14 +1488,14 @@ func TestCompareServices(t *testing.T) {
 				},
 				v1.ServiceTypeClusterIP,
 				[]string{"128.141.0.0/16", "137.138.0.0/16"},
-				nil, defaultPolicy),
+				nil, defaultPolicy, nil),
 			new: newService(
 				map[string]string{
 					constants.ZalandoDNSNameAnnotation: "clstr.acid.zalan.do",
 				},
 				v1.ServiceTypeLoadBalancer,
 				[]string{"128.141.0.0/16", "137.138.0.0/16"},
-				nil, defaultPolicy),
+				nil, defaultPolicy, nil),
 			match:  false,
 			reason: `new service's type "LoadBalancer" does not match the current one "ClusterIP"`,
 		},
@@ -1433,14 +1507,14 @@ func TestCompareServices(t *testing.T) {
 				},
 				v1.ServiceTypeLoadBalancer,
 				[]string{"128.141.0.0/16", "137.138.0.0/16"},
-				nil, defaultPolicy),
+				nil, defaultPolicy, nil),
 			new: newService(
 				map[string]string{
 					constants.ZalandoDNSNameAnnotation: "clstr.acid.zalan.do",
 				},
 				v1.ServiceTypeLoadBalancer,
 				[]string{"185.249.56.0/22"},
-				nil, defaultPolicy),
+				nil, defaultPolicy, nil),
 			match:  false,
 			reason: `new service's LoadBalancerSourceRange does not match the current one`,
 		},
@@ -1452,14 +1526,14 @@ func TestCompareServices(t *testing.T) {
 				},
 				v1.ServiceTypeLoadBalancer,
 				[]string{"128.141.0.0/16", "137.138.0.0/16"},
-				nil, defaultPolicy),
+				nil, defaultPolicy, nil),
 			new: newService(
 				map[string]string{
 					constants.ZalandoDNSNameAnnotation: "clstr.acid.zalan.do",
 				},
 				v1.ServiceTypeLoadBalancer,
 				[]string{},
-				nil, defaultPolicy),
+				nil, defaultPolicy, nil),
 			match:  false,
 			reason: `new service's LoadBalancerSourceRange does not match the current one`,
 		},
@@ -1471,7 +1545,7 @@ func TestCompareServices(t *testing.T) {
 				},
 				v1.ServiceTypeClusterIP,
 				[]string{"128.141.0.0/16", "137.138.0.0/16"},
-				nil, defaultPolicy),
+				nil, defaultPolicy, nil),
 			new:   serviceWithOwnerReference,
 			match: false,
 		},
@@ -1481,12 +1555,12 @@ func TestCompareServices(t *testing.T) {
 				map[string]string{},
 				v1.ServiceTypeClusterIP,
 				[]string{},
-				nil, defaultPolicy),
+				nil, defaultPolicy, nil),
 			new: newService(
 				map[string]string{},
 				v1.ServiceTypeClusterIP,
 				[]string{},
-				map[string]string{"cluster-name": "clstr", "spilo-role": "master"}, defaultPolicy),
+				map[string]string{"cluster-name": "clstr", "spilo-role": "master"}, defaultPolicy, nil),
 			match: false,
 		},
 		{
@@ -1495,13 +1569,41 @@ func TestCompareServices(t *testing.T) {
 				map[string]string{},
 				v1.ServiceTypeClusterIP,
 				[]string{},
-				nil, defaultPolicy),
+				nil, defaultPolicy, nil),
 			new: newService(
 				map[string]string{},
 				v1.ServiceTypeClusterIP,
 				[]string{},
-				nil, v1.ServiceExternalTrafficPolicyTypeLocal),
+				nil, v1.ServiceExternalTrafficPolicyTypeLocal, nil),
 			match: false,
+		},
+		{
+			about: "services differ on node port",
+			current: newService(
+				map[string]string{},
+				v1.ServiceTypeNodePort,
+				[]string{},
+				nil, defaultPolicy, &portZero),
+			new: newService(
+				map[string]string{},
+				v1.ServiceTypeNodePort,
+				[]string{},
+				nil, defaultPolicy, &portNotZero),
+			match: false,
+		},
+		{
+			about: "services do not differ on node port when requesting 0",
+			current: newService(
+				map[string]string{},
+				v1.ServiceTypeNodePort,
+				[]string{},
+				nil, defaultPolicy, &portNotZero),
+			new: newService(
+				map[string]string{},
+				v1.ServiceTypeNodePort,
+				[]string{},
+				nil, defaultPolicy, &portZero),
+			match: true,
 		},
 	}
 
@@ -1524,12 +1626,21 @@ func TestCompareServices(t *testing.T) {
 	}
 }
 
+var (
+	defaultSuccessfulJobsHistoryLimit = int32(3)
+	defaultFailedJobsHistoryLimit     = int32(3)
+	defaultTTLSecondsAfterFinished    = int32(86400)
+)
+
 func newCronJob(image, schedule string, vars []v1.EnvVar, mounts []v1.VolumeMount) *batchv1.CronJob {
 	cron := &batchv1.CronJob{
 		Spec: batchv1.CronJobSpec{
-			Schedule: schedule,
+			Schedule:                   schedule,
+			SuccessfulJobsHistoryLimit: &defaultSuccessfulJobsHistoryLimit,
+			FailedJobsHistoryLimit:     &defaultFailedJobsHistoryLimit,
 			JobTemplate: batchv1.JobTemplateSpec{
 				Spec: batchv1.JobSpec{
+					TTLSecondsAfterFinished: &defaultTTLSecondsAfterFinished,
 					Template: v1.PodTemplateSpec{
 						Spec: v1.PodSpec{
 							Containers: []v1.Container{
@@ -1581,8 +1692,8 @@ func newCronJob(image, schedule string, vars []v1.EnvVar, mounts []v1.VolumeMoun
 
 func TestCompareLogicalBackupJob(t *testing.T) {
 
-	img1 := "ghcr.io/zalando/postgres-operator/logical-backup:v1.14.0"
-	img2 := "ghcr.io/zalando/postgres-operator/logical-backup:v1.15.1"
+	img1 := "ghcr.io/zalando/postgres-operator/logical-backup:v2.0.1"
+	img2 := "ghcr.io/zalando/postgres-operator/logical-backup:v2.0.3"
 
 	clientSet := fake.NewSimpleClientset()
 	acidClientSet := fakeacidv1.NewSimpleClientset()

@@ -19,7 +19,7 @@ set -o nounset
 set -o pipefail
 
 SRC="github.com"
-GOPKG="$SRC/zalando/postgres-operator"
+GOPKG="$SRC/zalando/postgres-operator/v2"
 CUSTOM_RESOURCE_NAME_ZAL="zalando.org"
 CUSTOM_RESOURCE_NAME_ACID="acid.zalan.do"
 CUSTOM_RESOURCE_VERSION="v1"
@@ -34,7 +34,6 @@ GROUPS_WITH_VERSIONS="${CUSTOM_RESOURCE_NAME_ZAL}:${CUSTOM_RESOURCE_VERSION},${C
 echo "Generating deepcopy funcs"
 go tool deepcopy-gen \
   --output-file zz_generated.deepcopy.go \
-  --bounding-dirs "${APIS_PKG}" \
   --go-header-file "${SCRIPT_ROOT}/hack/custom-boilerplate.go.txt" \
   "${APIS_PKG}/${CUSTOM_RESOURCE_NAME_ZAL}/${CUSTOM_RESOURCE_VERSION}" \
   "${APIS_PKG}/${CUSTOM_RESOURCE_NAME_ACID}/${CUSTOM_RESOURCE_VERSION}"

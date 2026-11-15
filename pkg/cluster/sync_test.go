@@ -20,15 +20,15 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
-	"github.com/zalando/postgres-operator/mocks"
-	acidv1 "github.com/zalando/postgres-operator/pkg/apis/acid.zalan.do/v1"
-	fakeacidv1 "github.com/zalando/postgres-operator/pkg/generated/clientset/versioned/fake"
-	"github.com/zalando/postgres-operator/pkg/spec"
-	"github.com/zalando/postgres-operator/pkg/util"
-	"github.com/zalando/postgres-operator/pkg/util/config"
-	"github.com/zalando/postgres-operator/pkg/util/constants"
-	"github.com/zalando/postgres-operator/pkg/util/k8sutil"
-	"github.com/zalando/postgres-operator/pkg/util/patroni"
+	"github.com/zalando/postgres-operator/v2/mocks"
+	acidv1 "github.com/zalando/postgres-operator/v2/pkg/apis/acid.zalan.do/v1"
+	fakeacidv1 "github.com/zalando/postgres-operator/v2/pkg/generated/clientset/versioned/fake"
+	"github.com/zalando/postgres-operator/v2/pkg/spec"
+	"github.com/zalando/postgres-operator/v2/pkg/util"
+	"github.com/zalando/postgres-operator/v2/pkg/util/config"
+	"github.com/zalando/postgres-operator/v2/pkg/util/constants"
+	"github.com/zalando/postgres-operator/v2/pkg/util/k8sutil"
+	"github.com/zalando/postgres-operator/v2/pkg/util/patroni"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
@@ -101,8 +101,8 @@ func TestSyncStatefulSetsAnnotations(t *testing.T) {
 					DefaultMemoryLimit:    "300Mi",
 					InheritedAnnotations:  []string{inheritedAnnotation},
 					PodRoleLabel:          "spilo-role",
-					ResourceCheckInterval: time.Duration(3),
-					ResourceCheckTimeout:  time.Duration(10),
+					ResourceCheckInterval: &metav1.Duration{Duration: 3 * time.Second},
+					ResourceCheckTimeout:  &metav1.Duration{Duration: 10 * time.Minute},
 				},
 			},
 		}, client, pg, logger, eventRecorder)
@@ -187,8 +187,8 @@ func TestPodAnnotationsSync(t *testing.T) {
 	var cluster = New(
 		Config{
 			OpConfig: config.Config{
-				PatroniAPICheckInterval: time.Duration(1),
-				PatroniAPICheckTimeout:  time.Duration(5),
+				PatroniAPICheckInterval: &metav1.Duration{Duration: 1 * time.Second},
+				PatroniAPICheckTimeout:  &metav1.Duration{Duration: 5 * time.Second},
 				PodManagementPolicy:     "ordered_ready",
 				CustomPodAnnotations:    customPodAnnotations,
 				ConnectionPooler: config.ConnectionPooler{
@@ -207,8 +207,8 @@ func TestPodAnnotationsSync(t *testing.T) {
 					DefaultMemoryLimit:    "300Mi",
 					MaxInstances:          -1,
 					PodRoleLabel:          "spilo-role",
-					ResourceCheckInterval: time.Duration(3),
-					ResourceCheckTimeout:  time.Duration(10),
+					ResourceCheckInterval: &metav1.Duration{Duration: 3 * time.Second},
+					ResourceCheckTimeout:  &metav1.Duration{Duration: 10 * time.Minute},
 				},
 			},
 		}, client, pg, logger, eventRecorder)
@@ -381,8 +381,8 @@ func TestCheckAndSetGlobalPostgreSQLConfiguration(t *testing.T) {
 					DefaultMemoryRequest:  "300Mi",
 					DefaultMemoryLimit:    "300Mi",
 					PodRoleLabel:          "spilo-role",
-					ResourceCheckInterval: time.Duration(3),
-					ResourceCheckTimeout:  time.Duration(10),
+					ResourceCheckInterval: &metav1.Duration{Duration: 3 * time.Second},
+					ResourceCheckTimeout:  &metav1.Duration{Duration: 10 * time.Minute},
 				},
 			},
 		}, client, pg, logger, eventRecorder)
@@ -694,8 +694,8 @@ func TestSyncStandbyClusterConfiguration(t *testing.T) {
 	var cluster = New(
 		Config{
 			OpConfig: config.Config{
-				PatroniAPICheckInterval: time.Duration(1),
-				PatroniAPICheckTimeout:  time.Duration(5),
+				PatroniAPICheckInterval: &metav1.Duration{Duration: 1 * time.Second},
+				PatroniAPICheckTimeout:  &metav1.Duration{Duration: 5 * time.Second},
 				PodManagementPolicy:     "ordered_ready",
 				Resources: config.Resources{
 					ClusterLabels:         map[string]string{"application": applicationLabel},
@@ -707,8 +707,8 @@ func TestSyncStandbyClusterConfiguration(t *testing.T) {
 					MinInstances:          int32(-1),
 					MaxInstances:          int32(-1),
 					PodRoleLabel:          "spilo-role",
-					ResourceCheckInterval: time.Duration(3),
-					ResourceCheckTimeout:  time.Duration(10),
+					ResourceCheckInterval: &metav1.Duration{Duration: 3 * time.Second},
+					ResourceCheckTimeout:  &metav1.Duration{Duration: 10 * time.Minute},
 				},
 			},
 		}, client, pg, logger, eventRecorder)

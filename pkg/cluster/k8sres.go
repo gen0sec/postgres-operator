@@ -24,14 +24,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	acidv1 "github.com/zalando/postgres-operator/pkg/apis/acid.zalan.do/v1"
-	"github.com/zalando/postgres-operator/pkg/spec"
-	"github.com/zalando/postgres-operator/pkg/util"
-	"github.com/zalando/postgres-operator/pkg/util/config"
-	"github.com/zalando/postgres-operator/pkg/util/constants"
-	"github.com/zalando/postgres-operator/pkg/util/k8sutil"
-	"github.com/zalando/postgres-operator/pkg/util/patroni"
-	"github.com/zalando/postgres-operator/pkg/util/retryutil"
+	acidv1 "github.com/zalando/postgres-operator/v2/pkg/apis/acid.zalan.do/v1"
+	"github.com/zalando/postgres-operator/v2/pkg/spec"
+	"github.com/zalando/postgres-operator/v2/pkg/util"
+	"github.com/zalando/postgres-operator/v2/pkg/util/config"
+	"github.com/zalando/postgres-operator/v2/pkg/util/constants"
+	"github.com/zalando/postgres-operator/v2/pkg/util/k8sutil"
+	"github.com/zalando/postgres-operator/v2/pkg/util/patroni"
+	"github.com/zalando/postgres-operator/v2/pkg/util/retryutil"
 )
 
 const (
@@ -171,7 +171,7 @@ func (c *Cluster) enforceMinResourceLimits(resources *v1.ResourceRequirements) e
 			msg = fmt.Sprintf("defined CPU limit %s for %q container is below required minimum %s and will be increased",
 				cpuLimit.String(), constants.PostgresContainerName, minCPULimit)
 			c.logger.Warningf("%s", msg)
-			c.eventRecorder.Eventf(c.GetReference(), v1.EventTypeWarning, "ResourceLimits", msg)
+			c.eventRecorder.Event(c.GetReference(), v1.EventTypeWarning, "ResourceLimits", msg)
 			resources.Limits[v1.ResourceCPU], _ = resource.ParseQuantity(minCPULimit)
 		}
 	}
@@ -188,7 +188,7 @@ func (c *Cluster) enforceMinResourceLimits(resources *v1.ResourceRequirements) e
 			msg = fmt.Sprintf("defined memory limit %s for %q container is below required minimum %s and will be increased",
 				memoryLimit.String(), constants.PostgresContainerName, minMemoryLimit)
 			c.logger.Warningf("%s", msg)
-			c.eventRecorder.Eventf(c.GetReference(), v1.EventTypeWarning, "ResourceLimits", msg)
+			c.eventRecorder.Event(c.GetReference(), v1.EventTypeWarning, "ResourceLimits", msg)
 			resources.Limits[v1.ResourceMemory], _ = resource.ParseQuantity(minMemoryLimit)
 		}
 	}
@@ -366,7 +366,7 @@ func generateSpiloJSONConfiguration(pg *acidv1.PostgresqlParam, patroni *acidv1.
 
 	config.Bootstrap = pgBootstrap{}
 
-	config.Bootstrap.Initdb = []interface{}{map[string]string{"auth-host": "md5"},
+	config.Bootstrap.Initdb = []interface{}{map[string]string{"auth-host": "scram-sha-256"},
 		map[string]string{"auth-local": "trust"}}
 
 	initdbOptionNames := []string{}
@@ -612,6 +612,13 @@ func generatePodAntiAffinity(podAffinityTerm v1.PodAffinityTerm, preferredDuring
 	return podAntiAffinity
 }
 
+func generateTopologySpreadConstraints(labels labels.Set, topologySpreadConstraints []v1.TopologySpreadConstraint) []v1.TopologySpreadConstraint {
+	for _, topologySpreadConstraint := range topologySpreadConstraints {
+		topologySpreadConstraint.LabelSelector = &metav1.LabelSelector{MatchLabels: labels}
+	}
+	return topologySpreadConstraints
+}
+
 func tolerations(tolerationsSpec *[]v1.Toleration, podToleration map[string]string) []v1.Toleration {
 	// allow to override tolerations by postgresql manifest
 	if len(*tolerationsSpec) > 0 {
@@ -690,6 +697,7 @@ func generateContainer(
 	dockerImage *string,
 	resourceRequirements *v1.ResourceRequirements,
 	envVars []v1.EnvVar,
+	envFrom []v1.EnvFromSource,
 	volumeMounts []v1.VolumeMount,
 	privilegedMode bool,
 	privilegeEscalationMode *bool,
@@ -716,6 +724,7 @@ func generateContainer(
 		},
 		VolumeMounts: volumeMounts,
 		Env:          envVars,
+		EnvFrom:      envFrom,
 		SecurityContext: &v1.SecurityContext{
 			AllowPrivilegeEscalation: privilegeEscalationMode,
 			Privileged:               &privilegedMode,
@@ -817,6 +826,7 @@ func (c *Cluster) generatePodTemplate(
 	initContainers []v1.Container,
 	sidecarContainers []v1.Container,
 	sharePgSocketWithSidecars *bool,
+	topologySpreadConstraintsSpec []v1.TopologySpreadConstraint,
 	tolerationsSpec *[]v1.Toleration,
 	nodeAffinity *v1.Affinity,
 	schedulerName *string,
@@ -886,6 +896,8 @@ func (c *Cluster) generatePodTemplate(
 	if priorityClassName != "" {
 		podSpec.PriorityClassName = priorityClassName
 	}
+
+	podSpec.TopologySpreadConstraints = generateTopologySpreadConstraints(labels, topologySpreadConstraintsSpec)
 
 	if sharePgSocketWithSidecars != nil && *sharePgSocketWithSidecars {
 		addVarRunVolume(&podSpec)
@@ -1089,6 +1101,10 @@ func (c *Cluster) generateSpiloPodEnvVars(
 		opConfigEnvVars = append(opConfigEnvVars, v1.EnvVar{Name: "LOG_BUCKET_SCOPE_PREFIX", Value: ""})
 	}
 
+	if c.OpConfig.IRSARoleARN != "" {
+		opConfigEnvVars = append(opConfigEnvVars, v1.EnvVar{Name: "SPILO_PROVIDER", Value: "aws"})
+	}
+
 	envVars = appendEnvVars(envVars, opConfigEnvVars...)
 
 	return envVars, nil
@@ -1155,7 +1171,7 @@ func (c *Cluster) getPodEnvironmentSecretVariables() ([]v1.EnvVar, error) {
 
 	secret := &v1.Secret{}
 	var notFoundErr error
-	err := retryutil.Retry(c.OpConfig.ResourceCheckInterval, c.OpConfig.ResourceCheckTimeout,
+	err := retryutil.Retry(c.OpConfig.ResourceCheckInterval.Duration, c.OpConfig.ResourceCheckTimeout.Duration,
 		func() (bool, error) {
 			var err error
 			secret, err = c.KubeClient.Secrets(c.Namespace).Get(
@@ -1289,6 +1305,19 @@ func generateSpiloReadinessProbe() *v1.Probe {
 	}
 }
 
+func generateSpiloLivenessProbe(probe, defaultProbe *v1.Probe) *v1.Probe {
+
+	if probe != nil {
+		return probe
+	}
+
+	if defaultProbe != nil {
+		return defaultProbe
+	}
+
+	return nil
+}
+
 func (c *Cluster) generateStatefulSet(spec *acidv1.PostgresSpec) (*appsv1.StatefulSet, error) {
 
 	var (
@@ -1314,28 +1343,6 @@ func (c *Cluster) generateStatefulSet(spec *acidv1.PostgresSpec) (*appsv1.Statef
 		initContainers = spec.InitContainers
 		if err := c.validateContainers(initContainers); err != nil {
 			return nil, fmt.Errorf("invalid init containers: %v", err)
-		}
-	}
-
-	// backward compatible check for InitContainers
-	if spec.InitContainersOld != nil {
-		msg := "manifest parameter init_containers is deprecated."
-		if spec.InitContainers == nil {
-			c.logger.Warningf("%s Consider using initContainers instead.", msg)
-			spec.InitContainers = spec.InitContainersOld
-		} else {
-			c.logger.Warningf("%s Only value from initContainers is used", msg)
-		}
-	}
-
-	// backward compatible check for PodPriorityClassName
-	if spec.PodPriorityClassNameOld != "" {
-		msg := "manifest parameter pod_priority_class_name is deprecated."
-		if spec.PodPriorityClassName == "" {
-			c.logger.Warningf("%s Consider using podPriorityClassName instead.", msg)
-			spec.PodPriorityClassName = spec.PodPriorityClassNameOld
-		} else {
-			c.logger.Warningf("%s Only value from podPriorityClassName is used", msg)
 		}
 	}
 
@@ -1384,6 +1391,7 @@ func (c *Cluster) generateStatefulSet(spec *acidv1.PostgresSpec) (*appsv1.Statef
 		&effectiveDockerImage,
 		resourceRequirements,
 		spiloEnvVars,
+		spec.EnvFrom,
 		volumeMounts,
 		c.OpConfig.Resources.SpiloPrivileged,
 		c.OpConfig.Resources.SpiloAllowPrivilegeEscalation,
@@ -1394,6 +1402,8 @@ func (c *Cluster) generateStatefulSet(spec *acidv1.PostgresSpec) (*appsv1.Statef
 	if c.OpConfig.EnableReadinessProbe {
 		spiloContainer.ReadinessProbe = generateSpiloReadinessProbe()
 	}
+
+	spiloContainer.LivenessProbe = generateSpiloLivenessProbe(spec.LivenessProbe, c.OpConfig.LivenessProbe)
 
 	// generate container specs for sidecars specified in the cluster manifest
 	clusterSpecificSidecars := []v1.Container{}
@@ -1444,7 +1454,7 @@ func (c *Cluster) generateStatefulSet(spec *acidv1.PostgresSpec) (*appsv1.Statef
 	}
 
 	sidecarContainers, conflicts := mergeContainers(clusterSpecificSidecars, c.Config.OpConfig.SidecarContainers, globalSidecarContainersByDockerImage, scalyrSidecars)
-	for containerName := range conflicts {
+	for _, containerName := range conflicts {
 		c.logger.Warningf("a sidecar is specified twice. Ignoring sidecar %q in favor of %q with high a precedence",
 			containerName, containerName)
 	}
@@ -1469,10 +1479,11 @@ func (c *Cluster) generateStatefulSet(spec *acidv1.PostgresSpec) (*appsv1.Statef
 		initContainers,
 		sidecarContainers,
 		c.OpConfig.SharePgSocketWithSidecars,
+		spec.TopologySpreadConstraints,
 		&tolerationSpec,
 		c.nodeAffinity(c.OpConfig.NodeReadinessLabel, spec.NodeAffinity),
 		spec.SchedulerName,
-		int64(c.OpConfig.PodTerminateGracePeriod.Seconds()),
+		int64(util.CoalesceDuration(c.OpConfig.PodTerminateGracePeriod, "5m").Seconds()),
 		c.OpConfig.PodServiceAccountName,
 		c.OpConfig.KubeIAMRole,
 		effectivePodPriorityClassName,
@@ -1924,9 +1935,15 @@ func (c *Cluster) generateSingleUserSecret(pgUser spec.PgUser) *v1.Secret {
 		lbls = c.connectionPoolerLabels("", false).MatchLabels
 	}
 
-	// if secret lives in another namespace we cannot set ownerReferences
+	// Skip a controller ownerReference on user-credential secrets when the
+	// operator is configured to keep them (enable_secrets_deletion=false);
+	// otherwise Kubernetes garbage collection would still cascade-delete them
+	// once the owning Postgresql CR is removed, defeating that setting.
+	// Cross-namespace secrets also have no ownerReference because K8s forbids
+	// cross-namespace ownerRefs by design.
 	var ownerReferences []metav1.OwnerReference
-	if c.Config.OpConfig.EnableCrossNamespaceSecret && c.Postgresql.ObjectMeta.Namespace != pgUser.Namespace {
+	secretsDeletionDisabled := c.OpConfig.EnableSecretsDeletion != nil && !*c.OpConfig.EnableSecretsDeletion
+	if secretsDeletionDisabled || (c.Config.OpConfig.EnableCrossNamespaceSecret && c.Postgresql.ObjectMeta.Namespace != pgUser.Namespace) {
 		ownerReferences = nil
 	} else {
 		ownerReferences = c.ownerReferences()
@@ -1978,6 +1995,37 @@ func (c *Cluster) shouldCreateLoadBalancerForService(role PostgresRole, spec *ac
 
 }
 
+func (c *Cluster) shouldCreateNodePortForService(role PostgresRole, spec *acidv1.PostgresSpec) (bool, int32) {
+	switch role {
+	case Replica:
+		// if the value is explicitly set in a Postgresql manifest, follow this setting
+		if spec.EnableReplicaNodePort != nil {
+			port := int32(0)
+			if spec.ReplicaNodePort != nil {
+				port = *spec.ReplicaNodePort
+			}
+
+			return *spec.EnableReplicaNodePort, port
+		}
+
+		// otherwise, follow the operator configuration
+		return c.OpConfig.EnableReplicaNodePort, 0
+	case Master:
+		if spec.EnableMasterNodePort != nil {
+			port := int32(0)
+			if spec.MasterNodePort != nil {
+				port = *spec.MasterNodePort
+			}
+
+			return *spec.EnableMasterNodePort, port
+		}
+
+		return c.OpConfig.EnableMasterNodePort, 0
+	default:
+		panic(fmt.Sprintf("Unknown role %v", role))
+	}
+}
+
 func (c *Cluster) generateService(role PostgresRole, spec *acidv1.PostgresSpec) *v1.Service {
 	serviceSpec := v1.ServiceSpec{
 		Ports: []v1.ServicePort{{Name: "postgresql", Port: pgPort, TargetPort: intstr.IntOrString{IntVal: pgPort}}},
@@ -1990,7 +2038,9 @@ func (c *Cluster) generateService(role PostgresRole, spec *acidv1.PostgresSpec) 
 		serviceSpec.Selector = c.roleLabelsSet(false, role)
 	}
 
-	if c.shouldCreateLoadBalancerForService(role, spec) {
+	if ok, port := c.shouldCreateNodePortForService(role, spec); ok {
+		c.configureNodePortService(&serviceSpec, port)
+	} else if c.shouldCreateLoadBalancerForService(role, spec) {
 		c.configureLoadBalanceService(&serviceSpec, spec.AllowedSourceRanges)
 	}
 
@@ -2023,10 +2073,21 @@ func (c *Cluster) configureLoadBalanceService(serviceSpec *v1.ServiceSpec, sourc
 	serviceSpec.Type = v1.ServiceTypeLoadBalancer
 }
 
+func (c *Cluster) configureNodePortService(serviceSpec *v1.ServiceSpec, port int32) {
+	serviceSpec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyType(c.OpConfig.ExternalTrafficPolicy)
+	serviceSpec.Type = v1.ServiceTypeNodePort
+
+	if port != 0 && len(serviceSpec.Ports) > 0 {
+		serviceSpec.Ports[0].NodePort = port
+	}
+}
+
 func (c *Cluster) generateServiceAnnotations(role PostgresRole, spec *acidv1.PostgresSpec) map[string]string {
 	annotations := c.getCustomServiceAnnotations(role, spec)
 
-	if c.shouldCreateLoadBalancerForService(role, spec) {
+	nodePort, _ := c.shouldCreateNodePortForService(role, spec)
+
+	if !nodePort && c.shouldCreateLoadBalancerForService(role, spec) {
 		dnsName := c.dnsName(role)
 
 		// External DNS name annotation is not customizable
@@ -2166,6 +2227,12 @@ func (c *Cluster) generateCloneEnvironment(description *acidv1.CloneDescription)
 		}
 	}
 
+	if c.OpConfig.IRSARoleARN != "" {
+		result = append(result, v1.EnvVar{Name: "CLONE_AWS_ROLE_ARN", Value: c.OpConfig.IRSARoleARN})
+		result = append(result, v1.EnvVar{Name: "CLONE_AWS_WEB_IDENTITY_TOKEN_FILE", Value: "/var/run/secrets/eks.amazonaws.com/serviceaccount/token"})
+		result = append(result, v1.EnvVar{Name: "CLONE_AWS_REGION", Value: c.OpConfig.AWSRegion})
+	}
+
 	return result
 }
 
@@ -2211,6 +2278,12 @@ func (c *Cluster) generateStandbyEnvironment(description *acidv1.StandbyDescript
 		result = append(result, v1.EnvVar{Name: "STANDBY_WAL_BUCKET_SCOPE_PREFIX", Value: ""})
 	}
 
+	if c.OpConfig.IRSARoleARN != "" {
+		result = append(result, v1.EnvVar{Name: "STANDBY_AWS_ROLE_ARN", Value: c.OpConfig.IRSARoleARN})
+		result = append(result, v1.EnvVar{Name: "STANDBY_AWS_WEB_IDENTITY_TOKEN_FILE", Value: "/var/run/secrets/eks.amazonaws.com/serviceaccount/token"})
+		result = append(result, v1.EnvVar{Name: "STANDBY_AWS_REGION", Value: c.OpConfig.AWSRegion})
+	}
+
 	return result
 }
 
@@ -2228,6 +2301,12 @@ func (c *Cluster) generatePrimaryPodDisruptionBudget() *policyv1.PodDisruptionBu
 	labels := c.labelsSet(false)
 	if pdbMasterLabelSelector == nil || *c.OpConfig.PDBMasterLabelSelector {
 		labels[c.OpConfig.PodRoleLabel] = string(Master)
+	}
+
+	// When master selector is disabled and synchronous_mode_strict is on, require
+	// master + synchronous_node_count (default 1) healthy pods for write quorum.
+	if pdbMasterLabelSelector != nil && !*pdbMasterLabelSelector && minAvailable.IntVal > 0 && c.Spec.SynchronousModeStrict {
+		minAvailable = intstr.FromInt32(int32(c.Spec.SynchronousNodeCount + 1))
 	}
 
 	return &policyv1.PodDisruptionBudget{
@@ -2248,12 +2327,18 @@ func (c *Cluster) generatePrimaryPodDisruptionBudget() *policyv1.PodDisruptionBu
 }
 
 func (c *Cluster) generateCriticalOpPodDisruptionBudget() *policyv1.PodDisruptionBudget {
-	minAvailable := intstr.FromInt32(c.Spec.NumberOfInstances)
+	// MaxUnavailable: 0 blocks voluntary disruption of any pod carrying the
+	// critical-operation label, while keeping the budget satisfied when no
+	// pod matches (status.desiredHealthy stays 0 outside critical
+	// operations). The previous MinAvailable: N spec left desiredHealthy at
+	// N with zero matching pods during normal operation, permanently firing
+	// alerts like kube-prometheus-stack's KubePdbNotEnoughHealthyPods (#3020).
+	maxUnavailable := intstr.FromInt32(0)
 	pdbEnabled := c.OpConfig.EnablePodDisruptionBudget
 
-	// if PodDisruptionBudget is disabled or if there are no DB pods, set the budget to 0.
+	// if PodDisruptionBudget is disabled or if there are no DB pods, allow all disruptions.
 	if (pdbEnabled != nil && !(*pdbEnabled)) || c.Spec.NumberOfInstances <= 0 {
-		minAvailable = intstr.FromInt(0)
+		maxUnavailable = intstr.FromString("100%")
 	}
 
 	labels := c.labelsSet(false)
@@ -2268,7 +2353,7 @@ func (c *Cluster) generateCriticalOpPodDisruptionBudget() *policyv1.PodDisruptio
 			OwnerReferences: c.ownerReferences(),
 		},
 		Spec: policyv1.PodDisruptionBudgetSpec{
-			MinAvailable: &minAvailable,
+			MaxUnavailable: &maxUnavailable,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
@@ -2321,6 +2406,7 @@ func (c *Cluster) generateLogicalBackupJob() (*batchv1.CronJob, error) {
 		&c.OpConfig.LogicalBackup.LogicalBackupDockerImage,
 		resourceRequirements,
 		envVars,
+		nil,
 		[]v1.VolumeMount{},
 		c.OpConfig.SpiloPrivileged, // use same value as for normal DB pods
 		c.OpConfig.SpiloAllowPrivilegeEscalation,
@@ -2346,6 +2432,8 @@ func (c *Cluster) generateLogicalBackupJob() (*batchv1.CronJob, error) {
 
 	tolerationsSpec := tolerations(&spec.Tolerations, c.OpConfig.PodToleration)
 
+	topologySpreadConstraintsSpec := generateTopologySpreadConstraints(labels, spec.TopologySpreadConstraints)
+
 	// re-use the method that generates DB pod templates
 	if podTemplate, err = c.generatePodTemplate(
 		c.Namespace,
@@ -2355,10 +2443,11 @@ func (c *Cluster) generateLogicalBackupJob() (*batchv1.CronJob, error) {
 		[]v1.Container{},
 		[]v1.Container{},
 		util.False(),
+		topologySpreadConstraintsSpec,
 		&tolerationsSpec,
 		c.nodeAffinity(c.OpConfig.NodeReadinessLabel, nil),
 		nil,
-		int64(c.OpConfig.PodTerminateGracePeriod.Seconds()),
+		int64(util.CoalesceDuration(c.OpConfig.PodTerminateGracePeriod, "5m").Seconds()),
 		c.OpConfig.PodServiceAccountName,
 		c.OpConfig.KubeIAMRole,
 		"",
@@ -2379,12 +2468,22 @@ func (c *Cluster) generateLogicalBackupJob() (*batchv1.CronJob, error) {
 	// configure a batch job
 
 	jobSpec := batchv1.JobSpec{
-		Template: *podTemplate,
+		Template:                *podTemplate,
+		TTLSecondsAfterFinished: c.OpConfig.LogicalBackup.LogicalBackupTTLSecondsAfterFinished,
+	}
+
+	if jobSpec.TTLSecondsAfterFinished == nil {
+		defaultTTL := int32(86400)
+		jobSpec.TTLSecondsAfterFinished = &defaultTTL
 	}
 
 	// configure a cron job
 
 	jobTemplateSpec := batchv1.JobTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels:      labels,
+			Annotations: c.annotationsSet(annotations),
+		},
 		Spec: jobSpec,
 	}
 
@@ -2393,18 +2492,32 @@ func (c *Cluster) generateLogicalBackupJob() (*batchv1.CronJob, error) {
 		schedule = c.OpConfig.LogicalBackupSchedule
 	}
 
+	successfulJobsHistoryLimit := c.OpConfig.LogicalBackup.LogicalBackupSuccessfulJobsHistoryLimit
+	if successfulJobsHistoryLimit == nil {
+		defaultLimit := int32(3)
+		successfulJobsHistoryLimit = &defaultLimit
+	}
+
+	failedJobsHistoryLimit := c.OpConfig.LogicalBackup.LogicalBackupFailedJobsHistoryLimit
+	if failedJobsHistoryLimit == nil {
+		defaultLimit := int32(3)
+		failedJobsHistoryLimit = &defaultLimit
+	}
+
 	cronJob := &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            c.getLogicalBackupJobName(),
 			Namespace:       c.Namespace,
-			Labels:          c.labelsSet(true),
-			Annotations:     c.annotationsSet(nil),
+			Labels:          labels,
+			Annotations:     c.annotationsSet(annotations),
 			OwnerReferences: c.ownerReferences(),
 		},
 		Spec: batchv1.CronJobSpec{
-			Schedule:          schedule,
-			JobTemplate:       jobTemplateSpec,
-			ConcurrencyPolicy: batchv1.ForbidConcurrent,
+			Schedule:                   schedule,
+			JobTemplate:                jobTemplateSpec,
+			ConcurrencyPolicy:          batchv1.ForbidConcurrent,
+			SuccessfulJobsHistoryLimit: successfulJobsHistoryLimit,
+			FailedJobsHistoryLimit:     failedJobsHistoryLimit,
 		},
 	}
 
