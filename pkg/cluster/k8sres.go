@@ -35,15 +35,17 @@ import (
 )
 
 const (
-	pgBinariesLocationTemplate     = "/usr/lib/postgresql/%v/bin"
-	patroniPGBinariesParameterName = "bin_dir"
-	patroniPGHBAConfParameterName  = "pg_hba"
-	localHost                      = "127.0.0.1/32"
-	scalyrSidecarName              = "scalyr-sidecar"
-	logicalBackupContainerName     = "logical-backup"
-	connectionPoolerContainer      = "connection-pooler"
-	pgPort                         = 5432
-	operatorPort                   = 8080
+	pgBinariesLocationTemplate                           = "/usr/lib/postgresql/%v/bin"
+	patroniPGBinariesParameterName                       = "bin_dir"
+	patroniPGHBAConfParameterName                        = "pg_hba"
+	patroniRemoveDataDirOnRewindFailureParameterName     = "remove_data_directory_on_rewind_failure"
+	patroniRemoveDataDirOnDivergedTimelinesParameterName = "remove_data_directory_on_diverged_timelines"
+	localHost                                            = "127.0.0.1/32"
+	scalyrSidecarName                                    = "scalyr-sidecar"
+	logicalBackupContainerName                           = "logical-backup"
+	connectionPoolerContainer                            = "connection-pooler"
+	pgPort                                               = 5432
+	operatorPort                                         = 8080
 )
 
 type patroniDCS struct {
@@ -474,6 +476,12 @@ PatroniInitDBParams:
 	// relevant section in the manifest.
 	if len(patroni.PgHba) > 0 {
 		config.PgLocalConfiguration[patroniPGHBAConfParameterName] = patroni.PgHba
+	}
+	if patroni.RemoveDataDirectoryOnRewindFailure != nil {
+		config.PgLocalConfiguration[patroniRemoveDataDirOnRewindFailureParameterName] = *patroni.RemoveDataDirectoryOnRewindFailure
+	}
+	if patroni.RemoveDataDirectoryOnDivergedTimelines != nil {
+		config.PgLocalConfiguration[patroniRemoveDataDirOnDivergedTimelinesParameterName] = *patroni.RemoveDataDirectoryOnDivergedTimelines
 	}
 
 	res, err := json.Marshal(config)

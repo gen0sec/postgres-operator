@@ -411,7 +411,22 @@ explanation of `ttl` and `loop_wait` parameters.
   This feature is included since Patroni 3.0.0. Hence, check the container
   image in use if this feature is included in the used Patroni version. The
   default is set to `false`. Optional. 
-  
+
+* **remove_data_directory_on_rewind_failure**
+  Patroni `postgresql.remove_data_directory_on_rewind_failure` parameter value.
+  If enabled, Patroni removes the data directory of a replica when `pg_rewind`
+  fails and re-initializes it from the primary, instead of starting Postgres
+  on a partially rewound data directory. This is a local Patroni setting, so it
+  is written to `SPILO_CONFIGURATION` and changing it rolls the pods. Not set by
+  default (Patroni default `false`). Optional.
+
+* **remove_data_directory_on_diverged_timelines**
+  Patroni `postgresql.remove_data_directory_on_diverged_timelines` parameter
+  value. If enabled, Patroni removes the data directory and re-initializes the
+  replica when its timeline diverged from the primary and `pg_rewind` cannot be
+  used. Same mechanics as above. Not set by default (Patroni default `false`).
+  Optional.
+
 ## Postgres container resources
 
 Those parameters define [CPU and memory requests and limits](https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/)

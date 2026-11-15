@@ -697,6 +697,16 @@ func (in *Patroni) DeepCopyInto(out *Patroni) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.RemoveDataDirectoryOnRewindFailure != nil {
+		in, out := &in.RemoveDataDirectoryOnRewindFailure, &out.RemoveDataDirectoryOnRewindFailure
+		*out = new(bool)
+		**out = **in
+	}
+	if in.RemoveDataDirectoryOnDivergedTimelines != nil {
+		in, out := &in.RemoveDataDirectoryOnDivergedTimelines, &out.RemoveDataDirectoryOnDivergedTimelines
+		*out = new(bool)
+		**out = **in
+	}
 	return
 }
 

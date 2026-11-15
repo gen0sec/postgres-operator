@@ -250,6 +250,13 @@ type Patroni struct {
 	SynchronousModeStrict bool                         `json:"synchronous_mode_strict,omitempty"`
 	SynchronousNodeCount  uint32                       `json:"synchronous_node_count,omitempty" defaults:"1"`
 	FailsafeMode          *bool                        `json:"failsafe_mode,omitempty"`
+	// RemoveDataDirectoryOnRewindFailure lets Patroni wipe the data directory and
+	// re-clone from the primary when pg_rewind fails, instead of starting Postgres
+	// on a partially rewound data directory (local Patroni config, applied on pod restart).
+	RemoveDataDirectoryOnRewindFailure *bool `json:"remove_data_directory_on_rewind_failure,omitempty"`
+	// RemoveDataDirectoryOnDivergedTimelines lets Patroni wipe the data directory and
+	// re-clone from the primary when timelines diverged and pg_rewind cannot be used.
+	RemoveDataDirectoryOnDivergedTimelines *bool `json:"remove_data_directory_on_diverged_timelines,omitempty"`
 }
 
 // StandbyDescription contains remote primary config and/or s3/gs wal path.

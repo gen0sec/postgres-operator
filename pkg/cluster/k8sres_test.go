@@ -124,6 +124,16 @@ func TestGenerateSpiloJSONConfiguration(t *testing.T) {
 			result: `{"postgresql":{"bin_dir":"/usr/lib/postgresql/18/bin"},"bootstrap":{"initdb":[{"auth-host":"scram-sha-256"},{"auth-local":"trust"}],"dcs":{"failsafe_mode":false}}}`,
 		},
 		{
+			subtest: "Patroni remove data directory on rewind failure / diverged timelines",
+			pgParam: &acidv1.PostgresqlParam{PgVersion: "18"},
+			patroni: &acidv1.Patroni{
+				RemoveDataDirectoryOnRewindFailure:     util.True(),
+				RemoveDataDirectoryOnDivergedTimelines: util.False(),
+			},
+			opConfig: &config.Config{},
+			result:   `{"postgresql":{"bin_dir":"/usr/lib/postgresql/18/bin","remove_data_directory_on_diverged_timelines":false,"remove_data_directory_on_rewind_failure":true},"bootstrap":{"initdb":[{"auth-host":"scram-sha-256"},{"auth-local":"trust"}],"dcs":{}}}`,
+		},
+		{
 			subtest: "Patroni failsafe_mode disabled globally, configured for cluster",
 			pgParam: &acidv1.PostgresqlParam{PgVersion: "18"},
 			patroni: &acidv1.Patroni{

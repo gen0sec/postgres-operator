@@ -2418,6 +2418,17 @@ spec:
                     items:
                       type: string
                     type: array
+                  remove_data_directory_on_diverged_timelines:
+                    description: |-
+                      RemoveDataDirectoryOnDivergedTimelines lets Patroni wipe the data directory and
+                      re-clone from the primary when timelines diverged and pg_rewind cannot be used.
+                    type: boolean
+                  remove_data_directory_on_rewind_failure:
+                    description: |-
+                      RemoveDataDirectoryOnRewindFailure lets Patroni wipe the data directory and
+                      re-clone from the primary when pg_rewind fails, instead of starting Postgres
+                      on a partially rewound data directory (local Patroni config, applied on pod restart).
+                    type: boolean
                   retry_timeout:
                     format: int32
                     type: integer
